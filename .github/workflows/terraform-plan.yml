@@ -157,7 +157,7 @@ jobs:
 
           if [[ "${ran_any}" -eq 1 ]]; then
             {
-              echo "comment<<'EOF'"
+              echo "comment<<EOF"
               cat "${comment_file}"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
