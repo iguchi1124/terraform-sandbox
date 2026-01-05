@@ -14,8 +14,7 @@ locals {
 
   mock_capabilities = [
     "plan-only",
-    "no-providers",
-    "safe-to-run"
+    "no-providers"
   ]
 }
 

@@ -14,8 +14,7 @@ locals {
 
   mock_capabilities = [
     "plan-only",
-    "static-tags",
-    "safe-to-run"
+    "static-tags"
   ]
 }
 
