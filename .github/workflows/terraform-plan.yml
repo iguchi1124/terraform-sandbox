@@ -181,19 +181,19 @@ jobs:
               issue_number,
               per_page: 100,
             });
+
             const existing = comments.data.find((comment) => comment.body && comment.body.startsWith(marker));
             if (existing) {
-              await github.rest.issues.updateComment({
+              await github.rest.issues.deleteComment({
                 owner,
                 repo,
                 comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
               });
             }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body,
+            });
