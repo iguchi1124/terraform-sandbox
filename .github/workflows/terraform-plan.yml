@@ -109,11 +109,10 @@ jobs:
         run: |
           set -euo pipefail
           dirs="${{ steps.targets.outputs.directories }}"
-          mkdir -p "$HOME/.terraform.d/plugin-cache"
-          export TF_PLUGIN_CACHE_DIR="$HOME/.terraform.d/plugin-cache"
 
           mkdir -p plan-outputs
-          comment_file="plan-outputs/comment.md"
+          comment_body=""
+          summary_body=""
           ran_any=0
 
           for dir in ${dirs}; do
@@ -136,32 +135,23 @@ jobs:
             echo "::endgroup::"
 
             if [[ "${ran_any}" -eq 0 ]]; then
-              {
-                echo "<!-- terraform-plan -->"
-                echo "## Terraform plan results"
-                echo ""
-              } > "${comment_file}"
+              comment_body="<!-- terraform-plan -->"$'\n'"## Terraform plan results"$'\n\n'
+              summary_body="## Terraform plan results"$'\n\n'
             fi
             ran_any=1
 
-            {
-              echo "<details><summary>${dir}</summary>"
-              echo ""
-              echo '```'
-              cat "${log_file}"
-              echo '```'
-              echo "</details>"
-              echo ""
-            } >> "${comment_file}"
+            section="<details><summary>${dir}</summary>"$'\n\n''```'$'\n'"$(cat "${log_file}")"$'\n''```'$'\n''</details>'$'\n\n'
+            comment_body+="${section}"
+            summary_body+="${section}"
           done
 
           if [[ "${ran_any}" -eq 1 ]]; then
             {
               echo "comment<<EOF"
-              cat "${comment_file}"
+              printf '%s\n' "${comment_body}"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
-            tail -n +2 "${comment_file}" >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' "${summary_body}" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "comment=" >> "$GITHUB_OUTPUT"
           fi
