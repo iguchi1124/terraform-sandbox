@@ -110,7 +110,6 @@ jobs:
           set -euo pipefail
           dirs="${{ steps.targets.outputs.directories }}"
 
-          mkdir -p plan-outputs
           comment_body=""
           summary_body=""
           ran_any=0
@@ -121,17 +120,16 @@ jobs:
               continue
             fi
 
-            safe_name=$(echo "${dir}" | sed 's#[^A-Za-z0-9._-]#-#g')
-            log_file="plan-outputs/${safe_name}.log"
-
             echo "::group::${dir}"
-            (
-              cd "${dir}"
-              terraform fmt -check -diff
-              terraform init -input=false -upgrade -no-color
-              terraform validate -no-color
-              terraform plan -input=false -no-color -lock-timeout=300s
-            ) 2>&1 | tee "${log_file}"
+            log_output="$(
+              (
+                cd "${dir}"
+                terraform fmt -check -diff
+                terraform init -input=false -upgrade -no-color
+                terraform validate -no-color
+                terraform plan -input=false -no-color -lock-timeout=300s
+              ) 2>&1 | tee /dev/stderr
+            )"
             echo "::endgroup::"
 
             if [[ "${ran_any}" -eq 0 ]]; then
@@ -140,7 +138,7 @@ jobs:
             fi
             ran_any=1
 
-            section="<details><summary>${dir}</summary>"$'\n\n''```'$'\n'"$(cat "${log_file}")"$'\n''```'$'\n''</details>'$'\n\n'
+            section="<details><summary>${dir}</summary>"$'\n\n''```'$'\n'"${log_output}"$'\n''```'$'\n''</details>'$'\n\n'
             comment_body+="${section}"
             summary_body+="${section}"
           done
