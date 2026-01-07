@@ -17,7 +17,6 @@ locals {
         workspace   = "github-actions"
       })
       features = [
-        "single-file",
         "module-free",
         "static-output"
       ]

@@ -1,0 +1,187 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - '**/*.tfvars.json'
+      - '**/*.tf.json'
+  workflow_dispatch:
+    inputs:
+      directories:
+        description: 'Space/comma separated Terraform directories to run plan (optional)'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: terraform-plan-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    env:
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+
+      - name: Determine target directories
+        id: targets
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          INPUT_DIRS: ${{ github.event.inputs.directories || '' }}
+        run: |
+          set -euo pipefail
+          declare -A dir_map=()
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_DIRS:-}" ]]; then
+            normalized=$(echo "${INPUT_DIRS}" | tr ',\n' ' ')
+            read -ra manual_dirs <<< "${normalized}"
+            for dir in "${manual_dirs[@]}"; do
+              [[ -z "${dir}" ]] && continue
+              dir_map["${dir}"]=1
+            done
+          fi
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            git fetch --no-tags --prune --depth=200 origin "${BASE_REF}"
+            changed_files=$(git diff --name-only "origin/${BASE_REF}"...HEAD || true)
+
+            while IFS= read -r file; do
+              [[ -z "${file}" ]] && continue
+
+              case "${file}" in
+                *.tf|*.tfvars|*.tfvars.json|*.tf.json) ;;
+                *) continue ;;
+              esac
+
+              candidate=$(dirname "${file}")
+              while [[ -n "${candidate}" && "${candidate}" != "." ]]; do
+                if [[ -f "${candidate}/main.tf" ]]; then
+                  if [[ "${candidate}" == modules || "${candidate}" == modules/* || "${candidate}" == */modules || "${candidate}" == */modules/* ]]; then
+                    candidate=$(dirname "${candidate}")
+                    continue
+                  fi
+                  dir_map["${candidate}"]=1
+                  break
+                fi
+
+                parent=$(dirname "${candidate}")
+                [[ "${parent}" == "${candidate}" ]] && break
+                candidate="${parent}"
+              done
+            done <<< "${changed_files}"
+          fi
+
+          if [[ "${#dir_map[@]}" -eq 0 ]]; then
+            echo "No Terraform root module changes detected."
+            echo "directories=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mapfile -t sorted_dirs < <(printf '%s\n' "${!dir_map[@]}" | sort)
+          printf 'Detected directories:\n'
+          for dir in "${sorted_dirs[@]}"; do
+            printf '  - %s\n' "${dir}"
+          done
+
+          printf "directories=%s\n" "${sorted_dirs[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform plan
+        id: plan
+        if: steps.targets.outputs.directories != ''
+        run: |
+          set -euo pipefail
+          dirs="${{ steps.targets.outputs.directories }}"
+
+          comment_body=""
+          summary_body=""
+          ran_any=0
+
+          for dir in ${dirs}; do
+            if [[ ! -d "${dir}" ]]; then
+              echo "Skipping ${dir} (directory not found)"
+              continue
+            fi
+
+            echo "::group::${dir}"
+            log_output="$(
+              (
+                cd "${dir}"
+                terraform fmt -check -diff
+                terraform init -input=false -upgrade -no-color
+                terraform validate -no-color
+                terraform plan -input=false -no-color -lock-timeout=300s
+              ) 2>&1 | tee /dev/stderr
+            )"
+            echo "::endgroup::"
+
+            if [[ "${ran_any}" -eq 0 ]]; then
+              comment_body="<!-- terraform-plan -->"$'\n'"## Terraform plan results"$'\n\n'
+              summary_body="## Terraform plan results"$'\n\n'
+            fi
+            ran_any=1
+
+            section="<details><summary>${dir}</summary>"$'\n\n''```'$'\n'"${log_output}"$'\n''```'$'\n''</details>'$'\n\n'
+            comment_body+="${section}"
+            summary_body+="${section}"
+          done
+
+          if [[ "${ran_any}" -eq 1 ]]; then
+            {
+              echo "comment<<EOF"
+              printf '%s\n' "${comment_body}"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            printf '%s\n' "${summary_body}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "comment=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post plan summary
+        if: github.event_name == 'pull_request' && steps.plan.outputs.comment != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- terraform-plan -->';
+            const body = ${{ toJSON(steps.plan.outputs.comment) }};
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.data.find((comment) => comment.body && comment.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+              });
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number,
+              body,
+            });
