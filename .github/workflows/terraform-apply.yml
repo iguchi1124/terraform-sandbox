@@ -1,0 +1,85 @@
+name: Terraform Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      directories:
+        description: 'Space/comma separated Terraform directories to apply (required)'
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    env:
+      TF_IN_AUTOMATION: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure refs/heads/main is selected
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "This workflow can only run for refs/heads/main but received ${GITHUB_REF}."
+            exit 1
+          fi
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+
+      - name: Parse target directories
+        id: targets
+        env:
+          INPUT_DIRS: ${{ github.event.inputs.directories }}
+        run: |
+          set -euo pipefail
+          declare -A dir_map=()
+          normalized=$(echo "${INPUT_DIRS}" | tr ',\n' ' ')
+          read -ra manual_dirs <<< "${normalized}"
+          for dir in "${manual_dirs[@]}"; do
+            [[ -z "${dir}" ]] && continue
+            dir_map["${dir}"]=1
+          done
+          if [[ "${#dir_map[@]}" -eq 0 ]]; then
+            echo "No Terraform directories were provided."
+            exit 1
+          fi
+          mapfile -t sorted_dirs < <(printf '%s\n' "${!dir_map[@]}" | sort)
+          printf 'directories=%s\n' "${sorted_dirs[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform plan and apply
+        if: steps.targets.outputs.directories != ''
+        env:
+          DIRS: ${{ steps.targets.outputs.directories }}
+        run: |
+          set -euo pipefail
+          summary="## Terraform apply\n\n"
+          for dir in ${DIRS}; do
+            if [[ ! -d "${dir}" ]]; then
+              echo "Directory ${dir} does not exist."
+              exit 1
+            fi
+            echo "::group::${dir}"
+            (
+              cd "${dir}"
+              terraform fmt -check -diff
+              terraform init -input=false -upgrade -no-color
+              terraform validate -no-color
+              terraform apply -input=false -no-color -lock-timeout=300s -auto-approve
+            )
+            echo "::endgroup::"
+            summary+="- Applied ${dir}\n"
+          done
+          printf '%b' "${summary}" >> "$GITHUB_STEP_SUMMARY"
